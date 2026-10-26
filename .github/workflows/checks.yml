@@ -1,0 +1,24 @@
+name: checks
+on: [push, pull_request]
+jobs:
+  budgets-and-fixes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # prove-flaws.sh and compare.sh need the as-delivered tag
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+      - run: composer install --no-interaction --no-progress
+      - run: cp .env.example .env && php artisan key:generate
+      - name: 'Fixed app: every budget kept, pages and figures right'
+        run: php artisan test
+      - name: 'App as delivered: every budget exceeded'
+        run: bash scripts/prove-flaws.sh
+      - name: 'Before and after on a 20,000-order shop'
+        run: bash scripts/compare.sh
+      # Advisories published after this demo was written are reported without failing the run.
+      - run: composer audit
+        continue-on-error: true

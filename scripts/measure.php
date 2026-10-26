@@ -53,7 +53,7 @@ foreach ($pages as $label => $uri) {
         $app['db']->listen(function () use (&$queries) { $queries++; });
         $app['events']->listen('eloquent.retrieved: *', function () use (&$models) { $models++; });
         $app['auth']->guard('web')->setUser(App\Models\User::first());
-        $queries = 0;
+        $queries = $models = 0;
 
         $kernel = $app->make(Illuminate\Contracts\Http\Kernel::class);
         gc_collect_cycles();
