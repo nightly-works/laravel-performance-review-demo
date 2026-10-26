@@ -20,7 +20,7 @@ class ReportController extends Controller
         $months = DB::table('orders')
             ->join('order_items', 'order_items.order_id', '=', 'orders.id')
             ->where('orders.status', '!=', 'cancelled')
-            ->where('orders.created_at', '>=', now()->subMonths(11)->startOfMonth())
+            ->where('orders.created_at', '>=', now()->subMonthsNoOverflow(11)->startOfMonth())
             ->groupByRaw($month)
             ->orderByRaw($month)
             ->selectRaw("$month as month, sum(order_items.quantity * order_items.unit_price_cents) as revenue_cents, count(distinct orders.id) as orders")

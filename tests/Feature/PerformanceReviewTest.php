@@ -88,7 +88,7 @@ class PerformanceReviewTest extends TestCase
         $this->assertNotEmpty($queries);
         foreach ($queries as $query) {
             $plan = collect(DB::select('EXPLAIN QUERY PLAN '.$query->sql, $query->bindings))->pluck('detail')->implode(' | ');
-            $this->assertDoesNotMatchRegularExpression('/SCAN (orders|order_items)\b(?! USING (COVERING )?INDEX)|TEMP B-TREE/', $plan, "$query->sql\n  plan: $plan");
+            $this->assertDoesNotMatchRegularExpression('/\bSCAN (orders|order_items)\b|TEMP B-TREE/', $plan, "$query->sql\n  plan: $plan");
         }
     }
 
@@ -122,6 +122,17 @@ class PerformanceReviewTest extends TestCase
 
         $this->assertSame(0, $models, "the report loaded $models Eloquent models");
         $this->assertCount(1, $queries);
+    }
+
+    public function test_revenue_report_covers_twelve_months_on_the_31st(): void
+    {
+        Carbon::setTestNow('2026-10-31 12:00:00');
+        $order = Order::factory()->create(['status' => 'shipped', 'created_at' => '2025-11-03 10:00:00']);
+        OrderItem::factory()->for($order)->create(['quantity' => 1, 'unit_price_cents' => 700]);
+
+        $this->getJson('/reports/revenue')->assertOk()->assertExactJson([
+            ['month' => '2025-11', 'revenue_cents' => 700, 'orders' => 1],
+        ]);
     }
 
     // Finding 4: the CSV export loads every order, customer and line at once, then builds the whole file in memory.
@@ -170,7 +181,7 @@ class PerformanceReviewTest extends TestCase
         $this->post("/orders/{$order->id}/ship")->assertRedirect();
 
         Mail::assertNothingSent();
-        Mail::assertQueued(OrderShipped::class, fn (OrderShipped $mail) => $mail->hasTo($order->customer->email));
+        Mail::assertQueued(OrderShipped::class, fn (OrderShipped $mail) => $mail->hasTo($order->customer->email) && $mail->afterCommit === true);
         $this->assertSame('shipped', $order->fresh()->status);
     }
 

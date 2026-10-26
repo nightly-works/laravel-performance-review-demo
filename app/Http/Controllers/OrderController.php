@@ -6,6 +6,7 @@ use App\Mail\OrderShipped;
 use App\Models\Order;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\View\View;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -31,7 +32,7 @@ class OrderController extends Controller
     {
         return response()->streamDownload(function () {
             $out = fopen('php://output', 'w');
-            fputcsv($out, ['number', 'date', 'customer', 'email', 'status', 'items', 'total_eur']);
+            fputcsv($out, ['number', 'date', 'customer', 'email', 'status', 'items', 'total_eur'], escape: '\\');
 
             Order::with(['customer', 'items'])->lazyById(500)->each(function (Order $order) use ($out) {
                 fputcsv($out, [
@@ -42,7 +43,7 @@ class OrderController extends Controller
                     $order->status,
                     $order->items->sum('quantity'),
                     number_format($order->totalCents() / 100, 2, '.', ''),
-                ]);
+                ], escape: '\\');
             });
 
             fclose($out);
@@ -54,9 +55,11 @@ class OrderController extends Controller
     {
         abort_unless($order->status === 'paid', 422, 'Only paid orders can be shipped.');
 
-        $order->forceFill(['status' => 'shipped', 'shipped_at' => now()])->save();
+        DB::transaction(function () use ($order) {
+            $order->forceFill(['status' => 'shipped', 'shipped_at' => now()])->save();
 
-        Mail::to($order->customer->email)->send(new OrderShipped($order));
+            Mail::to($order->customer->email)->send(new OrderShipped($order));
+        });
 
         return back()->with('status', "Order {$order->number} marked as shipped.");
     }

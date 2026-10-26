@@ -4,11 +4,11 @@
 
 **Scope**: the staff pages (order list, CSV export, revenue report, shipping), their controllers, models, migrations and mail. Reviewed in this repository; the app has no live deployment.
 **Method**: source read; each heavy page measured on a seeded copy with two years of history (20,000 orders, about 50,000 order lines, `scripts/measure.php`); each slow spot written as a budget test (queries, index use, models loaded, streaming, queueing in `tests/Feature/PerformanceReviewTest.php`) and run against the code as delivered (`scripts/prove-flaws.sh`: every budget is exceeded), then fixed one commit at a time until the same tests pass.
-**Result**: 5 findings. All fixed, each with a test that fails if the slow spot comes back. Pages and figures unchanged.
+**Result**: 5 findings. All fixed, each with a test that fails if the slow spot comes back. Pages and figures unchanged, except one edge case (finding 3). The review pass also fixed a bug found on the way: on the 31st of a month, the revenue report covered eleven months instead of twelve.
 
 ## Summary for the owner
 
-The CSV export for the accountant already fails on a shop of this size: with PHP's usual 128 MB memory limit it runs out of memory from about 15,000 orders (12,500 still passed in our runs), and it would fail sooner on a busier year. It now writes the file as it reads, and its memory stays at about 4 MB whatever the number of orders (checked up to 100,000). The order list ran 102 queries per page and now runs 4, and the revenue report loaded 30,000 records to add them up in PHP: the database now does the sum, 414 ms down to 13 ms. Marking an order shipped no longer waits on the mail server.
+The CSV export for the accountant is at the edge on a shop of this size: it needs 119 MB on top of the framework, and with PHP's usual 128 MB memory limit it ran out of memory from about 15,000 orders in our runs (12,500 still passed). It now writes the file as it reads, and its memory stays at about 4 MB whatever the number of orders (checked up to 100,000). The order list ran 102 queries per page and now runs 4, and the revenue report loaded 30,000 records to add them up in PHP: the database now does the sum, 414 ms down to 13 ms. Marking an order shipped no longer waits on the mail server.
 
 ## Measurements
 
@@ -19,46 +19,48 @@ Same seeded shop, SQLite, PHP 8.3, one request at a time (`scripts/compare.sh`; 
 | Orders to ship, 50 per page | 102 queries, 83 ms | 4 queries, 6 ms |
 | Shipped orders, page 100 | 102 queries, 89 ms | 4 queries, 6 ms |
 | Revenue report, 12 months | 30,225 models loaded, 414 ms, 51 MB | 1 query, no model, 13 ms, under 0.1 MB |
-| CSV export, 20,000 orders | 119 MB peak memory, 1.4 s; fails from about 15,000 orders at a 128 MB limit | 3.7 MB peak memory, 1.4 s |
+| CSV export, 20,000 orders | 119 MB peak memory, 1.4 s | 3.7 MB peak memory, 1.4 s |
 
-On a production database (MySQL or PostgreSQL over a network) each query costs more than on a local SQLite file, so the difference on the order list is larger there.
+The memory figures are the peak above a booted application; the process also holds the framework. The 128 MB threshold comes from the same script run with PHP's limit and a smaller or larger shop, on the app as delivered: `SHOP_ORDERS=12500 php -d memory_limit=128M scripts/measure.php` completes, `SHOP_ORDERS=15000 …` stops with "Allowed memory size exhausted" on the export. After the fixes, `SHOP_ORDERS=100000 php -d memory_limit=128M scripts/measure.php` completes, with the export at 3.7 MB. With fix 1 alone (`git checkout` its commit, then the same script), the two list pages take 11 and 17 ms.
+
+On a production database (MySQL or PostgreSQL over a network) each query costs more than on a local SQLite file, so the difference on the order list is expected to be larger there.
 
 ## Findings
 
 ### 1. The order list runs two queries per order (N+1)
 
 **What**: `OrderController@index` loads 50 orders, then the Blade view reads `$order->customer` and `$order->items` for each row: one query for the customer and one for the lines, per order.
-**Impact**: 102 queries for every page view, growing with the page size; most of the page's time on this sample.
+**Impact**: 102 queries for every page view, growing with the page size; on this sample, fixing this alone takes the page from 83 to 11 ms.
 **Fix**: `with(['customer', 'items'])`: 4 queries whatever the page size. `Model::preventLazyLoading()` outside production, so a relation read in a loop throws in development and tests instead of slowing production quietly. The shipping email, which read each line's product the same way, now loads `items.product` once.
 **Verified**: the list runs the same number of queries for 10 and 50 orders, at most 4 (test 1).
 
 ### 2. The order list scans the whole orders table
 
 **What**: the list filters by `status` and sorts by `created_at`, and its page count filters by `status`; no index covers either, so the database reads every order and sorts the matches in a temporary structure. Lines are read by `order_id`, which has no index on SQLite or PostgreSQL (`foreignId()->constrained()` adds the constraint, not an index; MySQL's InnoDB adds one by itself).
-**Impact**: every page view reads the whole table, a cost that grows with the shop's history. On this sample the index saves 5 to 11 ms per page after fix 1; on a larger table, the gap widens.
+**Impact**: every page view reads the whole table, a cost that grows with the shop's history. On this sample the index takes the pages from 11 and 17 ms (fix 1 alone) to 6 ms; the gap grows with the table.
 **Fix**: an index on `orders (status, created_at)` and, where the database has none, on `order_items (order_id)`. The migration checks for an existing index first.
-**Verified**: `EXPLAIN QUERY PLAN` of every query behind the list shows an index search, with no full scan and no temporary sort (test 2).
+**Verified**: `EXPLAIN QUERY PLAN` of every query behind the list shows an index search, with no scan of the table or of a whole index and no temporary sort (test 2).
 
 ### 3. The revenue report adds up the year in PHP
 
 **What**: `ReportController@revenue` loads every non-cancelled order of the last twelve months with all its lines as Eloquent models, then groups and sums them in PHP.
 **Impact**: 30,225 models and 51 MB for one chart on this sample; time and memory grow with sales, so the busiest year is the one where the dashboard breaks.
 **Fix**: one aggregate query (`sum(quantity * unit_price_cents)` grouped by month, joined on the lines); the month expression is chosen for SQLite, MySQL or PostgreSQL. Same JSON as before. One difference: an order with no lines no longer counts in the month's number of orders (the shop has none).
-**Verified**: the report returns the expected figures at the window's edges (last day before it, first day in it, cancelled and pending orders) with one query and no model loaded (test 3).
+**Verified**: the report returns the expected figures at the window's edges (last day before it, first day in it, cancelled and pending orders) with one query and no model loaded (test 3). The window was also off by a month on the 31st (`subMonths(11)` overflows from 31 October to 1 December): now `subMonthsNoOverflow(11)`, with its own test.
 
 ### 4. The CSV export builds the whole file in memory
 
 **What**: `OrderController@export` loads every order with its customer and lines, writes the CSV into a string, and only then sends it.
-**Impact**: memory grows with the shop's whole history: 119 MB at 20,000 orders, so the export fails with "Allowed memory size exhausted" under the usual 128 MB limit, from about 15,000 orders on this sample. The accountant's export is the one page that is bound to keep growing.
-**Fix**: `response()->streamDownload()` with `lazyById(500)`: the file is written as orders are read, 500 at a time with their customers and lines. Memory stays at about 4 MB up to 100,000 orders; time is unchanged (it is the reading and writing of every row).
+**Impact**: memory grows with the shop's whole history: 119 MB above the framework at 20,000 orders; under the usual 128 MB limit, the export stopped with "Allowed memory size exhausted" from about 15,000 orders on this sample (see Measurements). The accountant's export is the one page that is bound to keep growing.
+**Fix**: `response()->streamDownload()` with `lazyById(500)`: the file is written as orders are read, 500 at a time with their customers and lines, in the same id order as before. Memory stays at about 4 MB up to 100,000 orders; time is unchanged (it is the reading and writing of every row). `fputcsv` gets its `escape` argument, which PHP 8.4 deprecates leaving out.
 **Verified**: the response is streamed, every query on orders is limited to a batch, and all 1,200 rows come out in order with commas in names quoted (test 4).
 
 ### 5. Marking an order shipped waits on the mail server
 
 **What**: `OrderController@ship` sends the customer's email with `Mail::send()` inside the request.
 **Impact**: each click waits for the mail server (often hundreds of milliseconds, and up to the connection timeout when the server is slow or down); if sending fails, the staff member sees an error although the order is already marked shipped.
-**Fix**: `OrderShipped` implements `ShouldQueue` and is dispatched after the transaction commits. The app needs a queue worker (`php artisan queue:work` under a process manager); `.env.example` already uses the database queue.
-**Verified**: shipping an order queues the email to the customer and sends nothing during the request (test 5).
+**Fix**: `OrderShipped` implements `ShouldQueue` and is dispatched after the transaction commits; the status change and the email now share one transaction, so a failed save sends nothing. The app needs a queue worker (`php artisan queue:work` under a process manager); `.env.example` already uses the database queue.
+**Verified**: shipping an order queues the email to the customer, marked to wait for the commit, and sends nothing during the request (test 5).
 
 Normal use is pinned by the other tests: the list shows the chosen status newest first with the right totals, only paid orders can be shipped, the email lists every line, and every page needs a signed-in staff member.
 

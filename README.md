@@ -7,7 +7,7 @@ A proof piece for performance reviews of Laravel apps. A fictional shop back off
 | 1 | The order list runs two queries per order (N+1) | 102 queries, 83 ms | 4 queries, 6 ms |
 | 2 | The order list scans the whole orders table | full scan and temporary sort | index search |
 | 3 | The revenue report adds up the year in PHP | 30,225 models, 414 ms, 51 MB | 1 query, 13 ms |
-| 4 | The CSV export builds the whole file in memory | 119 MB; fails from about 15,000 orders at a 128 MB limit | 3.7 MB up to 100,000 orders |
+| 4 | The CSV export builds the whole file in memory | 119 MB; out of memory from about 15,000 orders at a 128 MB limit | 3.7 MB up to 100,000 orders |
 | 5 | Marking an order shipped waits on the mail server | email sent in the request | email queued after commit |
 
 Full write-up, as a client receives it: [docs/performance-review.md](docs/performance-review.md).
