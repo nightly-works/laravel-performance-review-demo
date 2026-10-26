@@ -13,6 +13,7 @@ removed=$(git diff --name-only --diff-filter=D as-delivered HEAD -- "${PATHS[@]}
 restore() {
   git checkout -q HEAD -- "${PATHS[@]}"
   for f in $removed; do rm -f "$f"; done
+  composer dump-autoload -q
   rm -f junit-as-delivered.xml
 }
 trap restore EXIT
@@ -20,6 +21,8 @@ trap restore EXIT
 git checkout -q as-delivered -- "${PATHS[@]}"
 # Files the fixes added (e.g. a migration) did not exist in the delivered app.
 for f in $added; do rm -f "$f"; done
+# Composer's optimized classmap still lists the removed files: rebuild it for the code as delivered.
+composer dump-autoload -q
 
 php artisan test --filter=PerformanceReviewTest --log-junit junit-as-delivered.xml >/dev/null 2>&1 || true
 
