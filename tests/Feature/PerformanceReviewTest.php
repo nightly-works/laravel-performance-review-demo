@@ -180,7 +180,7 @@ class PerformanceReviewTest extends TestCase
     {
         $this->paidOrders(3);
         Order::factory()->create(['status' => 'pending', 'number' => 'P1']);
-        [$older, , $newest] = Order::where('status', 'paid')->orderBy('created_at')->get()->all();
+        [$older, , $newest] = Order::with('customer')->where('status', 'paid')->orderBy('created_at')->get()->all();
 
         $this->get('/orders')
             ->assertOk()
@@ -197,6 +197,19 @@ class PerformanceReviewTest extends TestCase
         $this->post("/orders/{$order->id}/ship")->assertStatus(422);
         $this->assertSame('pending', $order->fresh()->status);
         Mail::assertNothingOutgoing();
+    }
+
+    public function test_shipping_email_lists_the_order_lines(): void
+    {
+        $this->paidOrders(1, lines: 3);
+        $order = Order::first();
+
+        $html = (new OrderShipped($order))->render();
+
+        $this->assertStringContainsString($order->customer->name, $html);
+        foreach ($order->items as $item) {
+            $this->assertStringContainsString("{$item->quantity} × {$item->product->name}", $html);
+        }
     }
 
     public function test_pages_need_a_signed_in_staff_member(): void

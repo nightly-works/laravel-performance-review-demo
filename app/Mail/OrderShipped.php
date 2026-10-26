@@ -24,6 +24,8 @@ class OrderShipped extends Mailable
 
     public function content(): Content
     {
+        $this->order->loadMissing(['customer', 'items.product']);
+
         return new Content(view: 'mail.order-shipped');
     }
 }

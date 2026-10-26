@@ -16,7 +16,8 @@ class OrderController extends Controller
     {
         $status = $request->query('status', 'paid');
 
-        $orders = Order::where('status', $status)
+        $orders = Order::with(['customer', 'items'])
+            ->where('status', $status)
             ->latest()
             ->paginate(50)
             ->withQueryString();
