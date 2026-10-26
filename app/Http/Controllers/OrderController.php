@@ -8,6 +8,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\View\View;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class OrderController extends Controller
 {
@@ -25,32 +26,27 @@ class OrderController extends Controller
         return view('orders.index', ['orders' => $orders, 'status' => $status]);
     }
 
-    /** Every order as CSV, for the accountant. */
-    public function export()
+    /** Every order as CSV, for the accountant, written as it is read: 500 orders in memory at a time. */
+    public function export(): StreamedResponse
     {
-        $orders = Order::with(['customer', 'items'])->orderBy('id')->get();
+        return response()->streamDownload(function () {
+            $out = fopen('php://output', 'w');
+            fputcsv($out, ['number', 'date', 'customer', 'email', 'status', 'items', 'total_eur']);
 
-        $out = fopen('php://temp', 'r+');
-        fputcsv($out, ['number', 'date', 'customer', 'email', 'status', 'items', 'total_eur']);
-        foreach ($orders as $order) {
-            fputcsv($out, [
-                $order->number,
-                $order->created_at->toDateString(),
-                $order->customer->name,
-                $order->customer->email,
-                $order->status,
-                $order->items->sum('quantity'),
-                number_format($order->totalCents() / 100, 2, '.', ''),
-            ]);
-        }
-        rewind($out);
-        $csv = stream_get_contents($out);
-        fclose($out);
+            Order::with(['customer', 'items'])->lazyById(500)->each(function (Order $order) use ($out) {
+                fputcsv($out, [
+                    $order->number,
+                    $order->created_at->toDateString(),
+                    $order->customer->name,
+                    $order->customer->email,
+                    $order->status,
+                    $order->items->sum('quantity'),
+                    number_format($order->totalCents() / 100, 2, '.', ''),
+                ]);
+            });
 
-        return response($csv, 200, [
-            'Content-Type' => 'text/csv; charset=UTF-8',
-            'Content-Disposition' => 'attachment; filename="orders.csv"',
-        ]);
+            fclose($out);
+        }, 'orders.csv', ['Content-Type' => 'text/csv; charset=UTF-8']);
     }
 
     /** Marks a paid order as shipped and tells the customer. */
